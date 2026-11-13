@@ -506,7 +506,8 @@ static HAL_StatusTypeDef ENC28J60_ReadTxStatus(uint8_t status[7])
     uint16_t end;
     if (ENC28J60_ReadControlRegPair(ENC28J60_REG_ETXNDL, &end) != HAL_OK)
         return HAL_ERROR;
-    if (end >= (ENC28J60_TX_BUF_END - 7)) return HAL_ERROR;
+    /* Семь байт TSV должны полностью находиться в TX RAM. */
+    if (end > (ENC28J60_TX_BUF_END - 7)) return HAL_ERROR;
     if (ENC28J60_WriteControlRegPair(ENC28J60_REG_ERDPTL,
                                      (uint16_t)(end + 1)) != HAL_OK)
         return HAL_ERROR;
@@ -579,6 +580,17 @@ ENC28J60_TxResult ENC28J60_TransmitFrame(uint8_t *data,
             (estat & ENC28J60_ESTAT_TXABRT) == 0)
             return ENC28J60_TX_OK;
 
+        /* Errata B7: при Late Collision TXRTS может остаться установленным.
+         * Завершаем неудачную попытку перед чтением TSV и новым запуском TX.
+         * Успешная передача уже обработана выше, поэтому кадр здесь не теряем.
+         */
+        if (ENC28J60_BitFieldClearRaw(ENC28J60_REG_ECON1,
+                                     ENC28J60_ECON1_TXRTS) != HAL_OK)
+        {
+            ENC28J60_ResetTxLogic();
+            return ENC28J60_TX_ERROR;
+        }
+
         late_collision = 0;
         if (ENC28J60_ReadTxStatus(tsv) != HAL_OK)
         {
@@ -618,6 +630,10 @@ static uint8_t ENC28J60_RecoverRx(void)
                                        ENC28J60_ECON2_PKTDEC) != HAL_OK)
                 return 0;
         }
+        /* Если счетчик остался ненулевым, RX считается невосстановленным. */
+        if (ENC28J60_ReadControlReg(ENC28J60_REG_EPKTCNT, &pending) != HAL_OK ||
+            pending != 0)
+            return 0;
     }
     if (ENC28J60_ConfigureBuffers() != 1) return 0;
     return ENC28J60_StartReceiving();
