@@ -5,12 +5,6 @@
 // Структура SPI1 уже создана в main.c
 extern SPI_HandleTypeDef hspi1;
 
-// MAC-адрес, который будет записан в регистры MAADR1...MAADR6
-static const uint8_t enc_mac_addr[ENC28J60_MAC_ADDRESS_SIZE] =
-{
-    0x02, 0x17, 0x22, 0xED, 0xA5, 0x01
-};
-
 // Указатель следующего непрочитанного пакета в RX-памяти
 static uint16_t enc_next_packet = ENC28J60_RX_BUF_START;
 
@@ -357,9 +351,34 @@ uint8_t ENC28J60_ConfigureBuffers(void)
 }
 
 // Настройка параметров MAC-контроллера
-uint8_t ENC28J60_ConfigureMAC(void)
+uint8_t ENC28J60_ConfigureMAC(ENC28J60_DuplexMode duplex)
 {
     HAL_StatusTypeDef status;
+    uint8_t macon3_value = ENC28J60_MACON3_VALUE;
+    uint8_t mabbipg_value = ENC28J60_MABBIPG_VALUE;
+    uint16_t maipg_value = ENC28J60_MAIPG_VALUE;
+
+    // Проверяем выбранный режим Duplex
+    if (duplex != ENC28J60_DUPLEX_HALF &&
+        duplex != ENC28J60_DUPLEX_FULL)
+    {
+        return 0;
+    }
+
+    // Переключать режим допускается только при остановленных RX и TX
+    if (ENC28J60_ReadControlReg(ENC28J60_REG_ECON1) &
+        (ENC28J60_ECON1_RXEN | ENC28J60_ECON1_TXRTS))
+    {
+        return 0;
+    }
+
+    // Для Full Duplex отличаются FULDPX и межкадровые интервалы
+    if (duplex == ENC28J60_DUPLEX_FULL)
+    {
+        macon3_value |= ENC28J60_MACON3_FULDPX;
+        mabbipg_value = ENC28J60_MABBIPG_FULL;
+        maipg_value = ENC28J60_MAIPG_FULL;
+    }
 
     // Разрешаем прием MAC и PAUSE-кадры
     status = ENC28J60_WriteControlReg(
@@ -369,10 +388,10 @@ uint8_t ENC28J60_ConfigureMAC(void)
 
     if (status != HAL_OK) return 0;
 
-    // Half Duplex, дополнение коротких кадров, CRC и контроль длины
+    // Выбранный Duplex, дополнение коротких кадров, CRC и контроль длины
     status = ENC28J60_WriteControlReg(
         ENC28J60_REG_MACON3,
-        ENC28J60_MACON3_VALUE
+        macon3_value
     );
 
     if (status != HAL_OK) return 0;
@@ -380,7 +399,7 @@ uint8_t ENC28J60_ConfigureMAC(void)
     // Интервал между последовательными кадрами
     status = ENC28J60_WriteControlReg(
         ENC28J60_REG_MABBIPG,
-        ENC28J60_MABBIPG_VALUE
+        mabbipg_value
     );
 
     if (status != HAL_OK) return 0;
@@ -388,7 +407,7 @@ uint8_t ENC28J60_ConfigureMAC(void)
     // Интервал Non-Back-to-Back, два регистра
     status = ENC28J60_WriteControlRegPair(
         ENC28J60_REG_MAIPGL,
-        ENC28J60_MAIPG_VALUE
+        maipg_value
     );
 
     if (status != HAL_OK) return 0;
@@ -410,21 +429,21 @@ uint8_t ENC28J60_ConfigureMAC(void)
 
     // Проверяем MACON3
     if (ENC28J60_ReadControlReg(ENC28J60_REG_MACON3)
-        != ENC28J60_MACON3_VALUE)
+        != macon3_value)
     {
         return 0;
     }
 
     // Проверяем MABBIPG
     if (ENC28J60_ReadControlReg(ENC28J60_REG_MABBIPG)
-        != ENC28J60_MABBIPG_VALUE)
+        != mabbipg_value)
     {
         return 0;
     }
 
     // Проверяем MAIPG
     if (ENC28J60_ReadControlRegPair(ENC28J60_REG_MAIPGL)
-        != ENC28J60_MAIPG_VALUE)
+        != maipg_value)
     {
         return 0;
     }
@@ -440,7 +459,7 @@ uint8_t ENC28J60_ConfigureMAC(void)
 }
 
 // Запись и проверка шести байтов MAC-адреса устройства
-uint8_t ENC28J60_ConfigureMACAddress(void)
+uint8_t ENC28J60_ConfigureMACAddress(const uint8_t *mac)
 {
     // Адреса шести регистров MAC-контроллера
     const uint8_t regs[ENC28J60_MAC_ADDRESS_SIZE] =
@@ -456,12 +475,18 @@ uint8_t ENC28J60_ConfigureMACAddress(void)
     HAL_StatusTypeDef status;
     uint8_t i;
 
+    // Проверяем указатель на MAC-адрес
+    if (mac == 0)
+    {
+        return 0;
+    }
+
     // Записываем MAC-адрес побайтно
     for (i = 0; i < ENC28J60_MAC_ADDRESS_SIZE; i++)
     {
         status = ENC28J60_WriteControlReg(
             regs[i],
-            enc_mac_addr[i]
+            mac[i]
         );
 
         if (status != HAL_OK)
@@ -474,7 +499,7 @@ uint8_t ENC28J60_ConfigureMACAddress(void)
     for (i = 0; i < ENC28J60_MAC_ADDRESS_SIZE; i++)
     {
         if (ENC28J60_ReadControlReg(regs[i])
-            != enc_mac_addr[i])
+            != mac[i])
         {
             return 0;
         }
@@ -654,10 +679,51 @@ uint8_t ENC28J60_StartReceiving(void)
 }
 
 // Полная последовательная инициализация ENC28J60
-ENC28J60_InitResult ENC28J60_Init(void)
+ENC28J60_InitResult ENC28J60_Init(const uint8_t *mac,
+                                   ENC28J60_DuplexMode duplex)
 {
     uint8_t revision;       // Аппаратная ревизия
-    uint16_t phy_value = 0; // Проверка PHCON2
+    uint16_t phy_value = 0; // Проверка регистров PHY
+    uint16_t phy_duplex;    // Значение PHCON1.PDPXMD
+    uint16_t phy_loopback;  // Значение PHCON2.HDLDIS
+    uint8_t i;              // Индекс байта MAC-адреса
+    uint8_t mac_nonzero = 0;
+
+    // Проверяем аргументы до обращения к контроллеру
+    if (mac == 0 ||
+        (duplex != ENC28J60_DUPLEX_HALF &&
+         duplex != ENC28J60_DUPLEX_FULL))
+    {
+        return ENC28J60_INIT_ERR_PARAM;
+    }
+
+    // MAC-адрес должен быть индивидуальным (Unicast)
+    if ((mac[0] & 0x01) != 0)
+    {
+        return ENC28J60_INIT_ERR_PARAM;
+    }
+
+    // Нулевой MAC-адрес использовать нельзя
+    for (i = 0; i < ENC28J60_MAC_ADDRESS_SIZE; i++)
+    {
+        if (mac[i] != 0)
+        {
+            mac_nonzero = 1;
+        }
+    }
+
+    if (mac_nonzero == 0)
+    {
+        return ENC28J60_INIT_ERR_PARAM;
+    }
+
+    // Параметры PHY для выбранного режима работы
+    phy_duplex = (duplex == ENC28J60_DUPLEX_FULL)
+               ? ENC28J60_PHCON1_PDPXMD : 0;
+
+    // Отключаем внутреннюю петлю только в Half Duplex
+    phy_loopback = (duplex == ENC28J60_DUPLEX_HALF)
+                 ? ENC28J60_PHCON2_VALUE : 0;
 
     // Выполняем программный сброс
     if (ENC28J60_SoftReset() != 1)
@@ -680,35 +746,48 @@ ENC28J60_InitResult ENC28J60_Init(void)
     }
 
     // Настраиваем регистры MAC
-    if (ENC28J60_ConfigureMAC() != 1)
+    if (ENC28J60_ConfigureMAC(duplex) != 1)
     {
         return ENC28J60_INIT_ERR_MAC;
     }
 
     // Записываем MAC-адрес
-    if (ENC28J60_ConfigureMACAddress() != 1)
+    if (ENC28J60_ConfigureMACAddress(mac) != 1)
     {
         return ENC28J60_INIT_ERR_ADDRESS;
     }
 
-    // В полудуплексе отключаем автоматическую внутреннюю петлю PHY
+    // Согласовываем режим PHY с ранее настроенным MACON3
+    // Во время настройки передатчик и приемник еще выключены
+    if (ENC28J60_WritePHY(
+        ENC28J60_PHY_PHCON1,
+        phy_duplex) != 1)
+    {
+        return ENC28J60_INIT_ERR_PHY;
+    }
+
+    // Проверяем бит PHY.PDPXMD
+    if (ENC28J60_ReadPHY(
+        ENC28J60_PHY_PHCON1,
+        &phy_value) != 1 ||
+        (phy_value & ENC28J60_PHCON1_PDPXMD) != phy_duplex)
+    {
+        return ENC28J60_INIT_ERR_PHY;
+    }
+
+    // Для Half Duplex отключаем автоматическую внутреннюю петлю PHY
     if (ENC28J60_WritePHY(
         ENC28J60_PHY_PHCON2,
-        ENC28J60_PHCON2_VALUE) != 1)
+        phy_loopback) != 1)
     {
         return ENC28J60_INIT_ERR_PHY;
     }
 
-    // Читаем PHCON2 обратно
+    // Проверяем бит PHY.HDLDIS
     if (ENC28J60_ReadPHY(
         ENC28J60_PHY_PHCON2,
-        &phy_value) != 1)
-    {
-        return ENC28J60_INIT_ERR_PHY;
-    }
-
-    // Проверяем бит HDLDIS
-    if ((phy_value & ENC28J60_PHCON2_HDLDIS) == 0)
+        &phy_value) != 1 ||
+        (phy_value & ENC28J60_PHCON2_HDLDIS) != phy_loopback)
     {
         return ENC28J60_INIT_ERR_PHY;
     }
@@ -1076,3 +1155,4 @@ uint16_t ENC28J60_GetPHYStatus(void)
     // Возвращаем состояние PHY
     return status;
 }
+
