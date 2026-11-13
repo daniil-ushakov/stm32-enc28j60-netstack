@@ -102,6 +102,7 @@
 #define ENC28J60_MICMD_MIIRD       0x01   // Начало чтения PHY
 #define ENC28J60_MISTAT_BUSY       0x01   // MII-операция еще выполняется
 
+#define ENC28J60_PHCON1_PDPXMD     0x0100 // Выбор Full Duplex в PHY
 #define ENC28J60_PHCON2_HDLDIS     0x0100 // Отключение автоматического обратного соединения PHY
 #define ENC28J60_PHSTAT2_DPXSTAT   0x0200 // Работа PHY в Full Duplex
 #define ENC28J60_PHSTAT2_LSTAT     0x0400 // Физическое Ethernet-соединение установлено
@@ -121,10 +122,13 @@
 // Настройки MAC
 
 #define ENC28J60_MACON1_VALUE      0x0D   // Прием MAC: MARXEN, RXPAUS, TXPAUS
-#define ENC28J60_MACON3_VALUE      0x32   // Half Duplex, дополнение кадра, CRC, проверка длины
+#define ENC28J60_MACON3_VALUE      0x32   // Базовая конфигурация MACON3 (Half Duplex)
+#define ENC28J60_MACON3_FULDPX     0x01   // Выбор Full Duplex в MACON3
 #define ENC28J60_MACON4_VALUE      0x40   // DEFER: ожидание освобождения среды передачи
 #define ENC28J60_MABBIPG_VALUE     0x12   // Интервал Back-to-Back для Half Duplex
+#define ENC28J60_MABBIPG_FULL      0x15   // Интервал Back-to-Back для Full Duplex
 #define ENC28J60_MAIPG_VALUE       0x0C12 // Интервал Non-Back-to-Back для Half Duplex
+#define ENC28J60_MAIPG_FULL        0x0012 // Интервал Non-Back-to-Back для Full Duplex
 #define ENC28J60_MAMXFL_VALUE      1518   // Максимальный Ethernet-кадр с FCS
 
 // Настройки приема и PHY
@@ -149,6 +153,17 @@
 #define ENC28J60_RESET_DELAY_MS    2      // Пауза после программного сброса
 
 
+/* Режим работы Ethernet */
+
+// ENC28J60 не поддерживает автоматическое согласование Half/Full Duplex.
+typedef enum
+{
+    ENC28J60_DUPLEX_HALF = 0, // Полудуплексный режим
+    ENC28J60_DUPLEX_FULL = 1  // Полнодуплексный режим
+
+} ENC28J60_DuplexMode;
+
+
 /* Коды результатов */
 
 // Результаты инициализации контроллера
@@ -162,7 +177,8 @@ typedef enum
     ENC28J60_INIT_ERR_MAC,      // Ошибка параметров MAC
     ENC28J60_INIT_ERR_ADDRESS,  // Ошибка записи аппаратного MAC-адреса
     ENC28J60_INIT_ERR_PHY,      // Ошибка работы с PHY
-    ENC28J60_INIT_ERR_RX        // Не удалось разрешить прием
+    ENC28J60_INIT_ERR_RX,       // Не удалось разрешить прием
+    ENC28J60_INIT_ERR_PARAM     // Некорректный MAC-адрес или Duplex
 
 } ENC28J60_InitResult;
 
@@ -209,11 +225,11 @@ uint8_t ENC28J60_ConfigureBuffers(void);
 
 // Настраивает MAC, межкадровые интервалы и максимальную длину.
 // Возвращает 1 при успешной настройке.
-uint8_t ENC28J60_ConfigureMAC(void);
+uint8_t ENC28J60_ConfigureMAC(ENC28J60_DuplexMode duplex);
 
-// Записывает фиксированный MAC-адрес устройства и проверяет чтением.
+// Записывает MAC-адрес из массива mac[6] и проверяет чтением.
 // Возвращает 1 при успешной записи.
-uint8_t ENC28J60_ConfigureMACAddress(void);
+uint8_t ENC28J60_ConfigureMACAddress(const uint8_t *mac);
 
 // Считывает PHY-регистр reg в переменную по указателю value.
 // reg - адрес регистра PHY.
@@ -232,8 +248,11 @@ uint8_t ENC28J60_WritePHY(uint8_t reg, uint16_t value);
 uint8_t ENC28J60_StartReceiving(void);
 
 // Выполняет полную инициализацию контроллера.
+// mac - указатель на массив из шести байтов MAC-адреса.
+// duplex - режим ENC28J60_DUPLEX_HALF или ENC28J60_DUPLEX_FULL.
 // Возвращает код результата ENC28J60_InitResult.
-ENC28J60_InitResult ENC28J60_Init(void);
+ENC28J60_InitResult ENC28J60_Init(const uint8_t *mac,
+                                   ENC28J60_DuplexMode duplex);
 
 // Возвращает количество ожидающих пакетов из регистра EPKTCNT.
 uint8_t ENC28J60_GetPacketCount(void);
@@ -262,4 +281,4 @@ ENC28J60_TxResult ENC28J60_TransmitFrame(
 // Возвращает содержимое PHSTAT2, при ошибке чтения - 0.
 uint16_t ENC28J60_GetPHYStatus(void);
 
-#endif // ENC28J60_H
+#endif // ENC28J60_H
