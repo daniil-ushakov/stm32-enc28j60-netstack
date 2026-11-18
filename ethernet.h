@@ -1,4 +1,4 @@
-// Ethernet II. Восстановлено по истории проекта, исходный файл недоступен.
+// Работа с Ethernet II: формирование, определение типа и обработка кадров.
 #ifndef ETHERNET_H
 #define ETHERNET_H
 #include <stdint.h>
