@@ -92,10 +92,11 @@ NET_PollResult NET_Poll(const NET_Config *config, uint16_t udpPort,
                         uint8_t *udpData, uint16_t udpCapacity,
                         uint16_t *udpSize)
 {
-    uint16_t frameSize;
-    uint16_t replySize;
-    NET_UDPInfo info;
-    ENC28J60_RxResult rxResult;
+    uint16_t frameSize;                                                    // Длина принятого Ethernet-кадра.
+    uint16_t replySize;                                                    // Длина ответа ARP или ICMP.
+    uint16_t etherType;                                                    // Тип протокола в Ethernet-заголовке.
+    NET_UDPInfo info;                                                      // Параметры принятой UDP-датаграммы.
+    ENC28J60_RxResult rxResult;                                            // Результат чтения кадра из ENC28J60.
 
     if (config == 0 || frame == 0 || udpSize == 0 ||
         frameCapacity < ETH_HEADER_SIZE)
@@ -103,25 +104,43 @@ NET_PollResult NET_Poll(const NET_Config *config, uint16_t udpPort,
 
     *udpSize = 0;
 
-    // Получаем один готовый Ethernet-кадр, если он есть.
-    rxResult = ENC28J60_ReceiveFrame(frame, frameCapacity, &frameSize);
+    rxResult = ENC28J60_ReceiveFrame(frame, frameCapacity, &frameSize);    // Получаем один кадр из ENC28J60.
     if (rxResult == ENC28J60_RX_EMPTY) return NET_POLL_EMPTY;
     if (rxResult != ENC28J60_RX_OK) return NET_POLL_RX_ERROR;
+    if (!ETH_GetType(frame, frameSize, &etherType)) return NET_POLL_IGNORED;
 
-    // Полезные данные UDP передаём приложению без обработки формата сообщения.
-    if (NET_ParseUDP(frame, frameSize, config->ip, udpPort, &info))
+    if (etherType == ETH_TYPE_IPV4)
     {
-        *udpSize = info.dataSize;
-        if (info.dataSize > udpCapacity ||
-            (info.dataSize != 0 && udpData == 0))
-            return NET_POLL_UDP_TOO_LARGE;
+        if (frameSize < ETH_HEADER_SIZE + IP_HEADER_SIZE)
+            return NET_POLL_IGNORED;
 
-        if (info.dataSize != 0)
-            memmove(udpData, info.data, info.dataSize);
-        return NET_POLL_UDP;
+        if (frame[ETH_HEADER_SIZE + 9] == IP_PROTOCOL_UDP)
+        {
+            // Принимаем UDP только с выбранного порта, ответ автоматически не отправляем.
+            if (!NET_ParseUDP(frame, frameSize, config->ip, udpPort, &info))
+                return NET_POLL_IGNORED;
+
+            *udpSize = info.dataSize;
+            if (info.dataSize > udpCapacity ||
+                (info.dataSize != 0 && udpData == 0))
+                return NET_POLL_UDP_TOO_LARGE;
+
+            if (info.dataSize != 0)
+                memmove(udpData, info.data, info.dataSize);
+
+            return NET_POLL_UDP;                                          // UDP обработан; передача не требуется.
+        }
+
+        // Только ICMP может требовать автоматический ответ.
+        if (frame[ETH_HEADER_SIZE + 9] != IP_PROTOCOL_ICMP)
+            return NET_POLL_IGNORED;
+    }
+    else if (etherType != ETH_TYPE_ARP)
+    {
+        return NET_POLL_IGNORED;                                         // Неизвестные протоколы не передаём.
     }
 
-    // Для ARP-запроса или ICMP Echo Request формируем ответ в том же буфере.
+    // Здесь находятся только ARP и ICMP; ответы формируются при корректном запросе.
     replySize = ETH_ProcessFrame(frame, frameSize,
                                  config->mac, config->ip,
                                  frame, frameCapacity);
