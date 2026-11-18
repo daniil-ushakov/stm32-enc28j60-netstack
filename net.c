@@ -85,3 +85,50 @@ uint8_t NET_ReceiveUDP(const uint8_t *frame, uint16_t frameSize,
     *dataSize = udp.dataSize;
     return 1;
 }
+
+// Обрабатывает один Ethernet-кадр без дополнительных больших буферов.
+NET_PollResult NET_Poll(const NET_Config *config, uint16_t udpPort,
+                        uint8_t *frame, uint16_t frameCapacity,
+                        uint8_t *udpData, uint16_t udpCapacity,
+                        uint16_t *udpSize)
+{
+    uint16_t frameSize;
+    uint16_t replySize;
+    NET_UDPInfo info;
+    ENC28J60_RxResult rxResult;
+
+    if (config == 0 || frame == 0 || udpSize == 0 ||
+        frameCapacity < ETH_HEADER_SIZE)
+        return NET_POLL_INVALID_ARG;
+
+    *udpSize = 0;
+
+    // Получаем один готовый Ethernet-кадр, если он есть.
+    rxResult = ENC28J60_ReceiveFrame(frame, frameCapacity, &frameSize);
+    if (rxResult == ENC28J60_RX_EMPTY) return NET_POLL_EMPTY;
+    if (rxResult != ENC28J60_RX_OK) return NET_POLL_RX_ERROR;
+
+    // Полезные данные UDP передаём приложению без обработки формата сообщения.
+    if (NET_ParseUDP(frame, frameSize, config->ip, udpPort, &info))
+    {
+        *udpSize = info.dataSize;
+        if (info.dataSize > udpCapacity ||
+            (info.dataSize != 0 && udpData == 0))
+            return NET_POLL_UDP_TOO_LARGE;
+
+        if (info.dataSize != 0)
+            memmove(udpData, info.data, info.dataSize);
+        return NET_POLL_UDP;
+    }
+
+    // Для ARP-запроса или ICMP Echo Request формируем ответ в том же буфере.
+    replySize = ETH_ProcessFrame(frame, frameSize,
+                                 config->mac, config->ip,
+                                 frame, frameCapacity);
+    if (replySize == 0) return NET_POLL_IGNORED;
+
+    if (ENC28J60_TransmitFrame(frame, replySize) != ENC28J60_TX_OK)
+        return NET_POLL_TX_ERROR;
+
+    return NET_POLL_REPLY_SENT;
+}

@@ -16,13 +16,32 @@ static const uint8_t ipA[4] = {169,254,242,50};
 static const uint8_t ipB[4] = {169,254,242,51};
 static uint8_t sent[1514];
 static uint16_t sentLength;
+static uint8_t incoming[1514];
+static uint16_t incomingLength;
+static ENC28J60_RxResult incomingStatus = ENC28J60_RX_EMPTY;
+static ENC28J60_TxResult mockTxResult = ENC28J60_TX_OK;
+
+ENC28J60_RxResult ENC28J60_ReceiveFrame(uint8_t *buffer,
+                                        uint16_t capacity,
+                                        uint16_t *receivedLength)
+{
+    ENC28J60_RxResult status = incomingStatus;
+    if (buffer == NULL || receivedLength == NULL) return ENC28J60_RX_INVALID_ARG;
+    *receivedLength = 0;
+    incomingStatus = ENC28J60_RX_EMPTY;
+    if (status != ENC28J60_RX_OK) return status;
+    if (incomingLength > capacity) return ENC28J60_RX_BUFFER_SMALL;
+    memcpy(buffer, incoming, incomingLength);
+    *receivedLength = incomingLength;
+    return ENC28J60_RX_OK;
+}
 
 ENC28J60_TxResult ENC28J60_TransmitFrame(uint8_t *data, uint16_t size)
 {
     assert(data != NULL && size <= sizeof(sent));
     memcpy(sent, data, size);
     sentLength = size;
-    return ENC28J60_TX_OK;
+    return mockTxResult;
 }
 
 static void test_arp(void)
@@ -133,11 +152,109 @@ static void test_udp(void)
                           NULL, 0, &received) && received == 0);
 }
 
+
+static void queue_received_frame(const uint8_t *frame, uint16_t size)
+{
+    assert(size <= sizeof(incoming));
+    memcpy(incoming, frame, size);
+    incomingLength = size;
+    incomingStatus = ENC28J60_RX_OK;
+}
+
+static void test_poll(void)
+{
+    NET_Config local = {{0}, {0}, {255,255,255,0}, {0}};
+    uint8_t frame[1514] = {0};
+    uint8_t data[64] = {0};
+    const uint8_t payload[5] = {0, 1, 0xAA, 0xFF, 0x42};
+    uint8_t ping[9] = {8,0,0,0,0,1,0,1,0x4A};
+    uint16_t length, replySize, checksum;
+    IP_PacketInfo ip;
+
+    memcpy(local.mac, macA, 6);
+    memcpy(local.ip, ipA, 4);
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_EMPTY);
+    assert(length == 0);
+    assert(NET_Poll(NULL, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_INVALID_ARG);
+
+    // UDP любой длины: заголовок и данные формируются передающим узлом.
+    assert(NET_SendUDP(macB, ipB, macA, ipA, 12345, 33333,
+                       payload, sizeof(payload), frame, sizeof(frame)) == ENC28J60_TX_OK);
+    queue_received_frame(sent, sentLength);
+    sentLength = 0;
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_UDP);
+    assert(length == sizeof(payload) && memcmp(data, payload, length) == 0);
+    assert(sentLength == 0); // На UDP не отправляем автоматический ответ.
+
+    queue_received_frame(frame, NET_UDP_FRAME_HEADER + sizeof(payload));
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, 4, &length) == NET_POLL_UDP_TOO_LARGE);
+    assert(length == 5);
+
+    queue_received_frame(frame, NET_UDP_FRAME_HEADER + sizeof(payload));
+    assert(NET_Poll(&local, 11111, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_IGNORED);
+    assert(length == 0);
+
+    // Стандартный ARP-запрос: автоматический ответ через ENC28J60.
+    memset(frame, 0, 42);
+    memset(frame, 0xFF, 6);
+    memcpy(frame + 6, macB, 6);
+    frame[12] = 8;
+    frame[13] = 6;
+    frame[14] = 0; frame[15] = 1;
+    frame[16] = 8; frame[17] = 0;
+    frame[18] = 6; frame[19] = 4;
+    frame[20] = 0; frame[21] = 1;
+    memcpy(frame + 22, macB, 6);
+    memcpy(frame + 28, ipB, 4);
+    memcpy(frame + 38, ipA, 4);
+    queue_received_frame(frame, 42);
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_REPLY_SENT);
+    assert(length == 0 && sentLength == 42);
+    assert(sent[20] == 0 && sent[21] == 2); // Ответ ARP.
+
+    // Echo Request: ICMP Echo Reply должен появиться автоматически.
+    checksum = ICMP_CalcChecksum(ping, sizeof(ping));
+    ping[2] = (uint8_t)(checksum >> 8);
+    ping[3] = (uint8_t)checksum;
+    length = IP_CreatePacket(ipB, ipA, IP_PROTOCOL_ICMP, ping, sizeof(ping),
+                             7, frame + ETH_HEADER_SIZE,
+                             sizeof(frame) - ETH_HEADER_SIZE);
+    assert(length);
+    replySize = ETH_CreateFrame(macA, macB, ETH_TYPE_IPV4,
+                                frame + ETH_HEADER_SIZE, length,
+                                frame, sizeof(frame));
+    assert(replySize == ETH_HEADER_SIZE + length);
+    queue_received_frame(frame, replySize);
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_REPLY_SENT);
+    assert(IP_ParsePacket(sent + ETH_HEADER_SIZE, sentLength - ETH_HEADER_SIZE,
+                          ipB, &ip));
+    assert(ip.data[0] == 0 && ICMP_CalcChecksum(ip.data, ip.dataLength) == 0);
+
+    // Ошибку передачи ответа сообщаем вызывающей программе.
+    queue_received_frame(incoming, incomingLength);
+    mockTxResult = ENC28J60_TX_ERROR;
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_TX_ERROR);
+    mockTxResult = ENC28J60_TX_OK;
+
+    incomingStatus = ENC28J60_RX_BAD_FRAME;
+    assert(NET_Poll(&local, 33333, frame, sizeof(frame),
+                    data, sizeof(data), &length) == NET_POLL_RX_ERROR);
+}
+
 int main(void)
 {
     test_arp();
     test_icmp();
     test_udp();
-    puts("Проверены ARP, ICMP, UDP, контрольные суммы и размеры пакетов.");
+    test_poll();
+    puts("Проверены ARP, ICMP, UDP, NET_Poll и контрольные суммы.");
     return 0;
 }
