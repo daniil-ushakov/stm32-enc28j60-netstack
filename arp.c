@@ -18,9 +18,10 @@ uint16_t ARP_ProcessPacket(const uint8_t *packet, uint16_t size,
     reply[2] = 8; reply[3] = 0;       // Protocol type: IPv4.
     reply[4] = 6; reply[5] = 4;       // Размеры адресов.
     reply[6] = 0; reply[7] = 2;       // ARP Reply.
-    memcpy(reply + 8, localMac, 6);  // MAC отправителя (нашей платы).
-    memcpy(reply + 14, localIp, 4);  // IP отправителя (нашей платы).
-    memcpy(reply + 18, packet + 8, 6);  // MAC адресата.
-    memcpy(reply + 24, packet + 14, 4); // IP адресата.
+    // Сначала переносим адреса отправителя запроса: допускается reply == packet.
+    memmove(reply + 24, packet + 14, 4); // IP адресата.
+    memmove(reply + 18, packet + 8, 6);  // MAC адресата.
+    memcpy(reply + 8, localMac, 6);      // Наш MAC.
+    memcpy(reply + 14, localIp, 4);      // Наш IP.
     return ARP_PACKET_SIZE;
 }

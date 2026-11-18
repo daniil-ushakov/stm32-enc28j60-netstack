@@ -1,17 +1,12 @@
 // ICMP: отвечаем на ping, сохраняя identifier, sequence и данные.
 #include "icmp.h"
+#include "ip.h"
 #include <string.h>
 
+// Контрольная сумма ICMP рассчитывается так же, как IPv4.
 uint16_t ICMP_CalcChecksum(const uint8_t *data, uint16_t size)
 {
-    uint32_t sum = 0;
-    uint16_t i;
-    if (data == 0) return 0;
-    for (i = 0; (uint32_t)i + 1U < size; i = (uint16_t)(i + 2U))
-        sum += ((uint16_t)data[i] << 8) | data[i + 1U];
-    if (i < size) sum += (uint16_t)data[i] << 8;
-    while (sum >> 16) sum = (sum & 0xFFFFU) + (sum >> 16);
-    return (uint16_t)~sum;
+    return IP_CalcChecksum(data, size);
 }
 
 uint16_t ICMP_ProcessPacket(const uint8_t *request, uint16_t size,

@@ -61,32 +61,3 @@ uint16_t UDP_CreatePacket(const uint8_t *sourceIp, const uint8_t *destIp,
     return length;
 }
 
-uint16_t UDP_CreateReply(const uint8_t *request, uint16_t requestSize,
-                         const uint8_t *sourceIp, const uint8_t *destIp,
-                         uint8_t *reply, uint16_t capacity)
-{
-    UDP_PacketInfo info;
-    uint16_t i, length, checksum;
-    if (request == 0 || sourceIp == 0 || destIp == 0 || reply == 0 ||
-        !UDP_ParseDatagram(request, requestSize, &info) ||
-        info.length != requestSize || info.destPort != UDP_DEMO_PORT ||
-        info.length > capacity) return 0;
-    if (info.checksum != 0 &&
-        UDP_CalcChecksum(sourceIp, destIp, request, info.length) != 0) return 0;
-    // Сохраняем полезные данные, но увеличиваем каждый байт на 1: TEST -> UFTU.
-    for (i = 0; i < info.dataLength; ++i)
-        reply[UDP_HEADER_SIZE + i] = (uint8_t)(info.data[i] + 1U);
-    length = (uint16_t)(UDP_HEADER_SIZE + info.dataLength);
-    reply[0] = (uint8_t)(info.destPort >> 8);
-    reply[1] = (uint8_t)info.destPort;
-    reply[2] = (uint8_t)(info.sourcePort >> 8);
-    reply[3] = (uint8_t)info.sourcePort;
-    reply[4] = (uint8_t)(length >> 8);
-    reply[5] = (uint8_t)length;
-    reply[6] = 0; reply[7] = 0;
-    checksum = UDP_CalcChecksum(destIp, sourceIp, reply, length);
-    if (checksum == 0) checksum = 0xFFFFU;
-    reply[6] = (uint8_t)(checksum >> 8);
-    reply[7] = (uint8_t)checksum;
-    return length;
-}

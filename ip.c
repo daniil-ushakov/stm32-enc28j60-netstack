@@ -1,7 +1,6 @@
-// IPv4: проверка заголовка, формирование ответа ICMP или тестового UDP.
+// IPv4: разбор, контрольная сумма и ответ на ICMP Echo Request.
 #include "ip.h"
 #include "icmp.h"
-#include "udp.h"
 #include <string.h>
 
 uint16_t IP_CalcChecksum(const uint8_t *data, uint16_t size)
@@ -54,11 +53,15 @@ uint16_t IP_CreatePacket(const uint8_t *sourceIp, const uint8_t *destIp,
                          uint8_t *packet, uint16_t capacity)
 {
     uint16_t length, checksum;
+    uint8_t source[4], destination[4];
     if (sourceIp == 0 || destIp == 0 || packet == 0 ||
         (payloadSize != 0 && payload == 0) ||
         payloadSize > 1480U || capacity < IP_HEADER_SIZE ||
         payloadSize > (uint16_t)(capacity - IP_HEADER_SIZE)) return 0;
     length = (uint16_t)(IP_HEADER_SIZE + payloadSize);
+    // Адреса могут находиться в исходном буфере, сохраняем их перед перемещением.
+    memcpy(source, sourceIp, 4);
+    memcpy(destination, destIp, 4);
     if (payloadSize != 0) memmove(packet + IP_HEADER_SIZE, payload, payloadSize);
     packet[0] = 0x45;              // IPv4, IHL = 5.
     packet[1] = 0;                 // DSCP, ECN.
@@ -70,8 +73,8 @@ uint16_t IP_CreatePacket(const uint8_t *sourceIp, const uint8_t *destIp,
     packet[8] = 64;                // TTL.
     packet[9] = protocol;
     packet[10] = 0; packet[11] = 0;
-    memcpy(packet + 12, sourceIp, 4);
-    memcpy(packet + 16, destIp, 4);
+    memcpy(packet + 12, source, 4);
+    memcpy(packet + 16, destination, 4);
     checksum = IP_CalcChecksum(packet, IP_HEADER_SIZE);
     packet[10] = (uint8_t)(checksum >> 8);
     packet[11] = (uint8_t)checksum;
@@ -82,7 +85,7 @@ uint16_t IP_CreateReply(const uint8_t *request, uint16_t requestSize,
                         const uint8_t *payload, uint16_t payloadSize,
                         uint8_t *reply, uint16_t capacity)
 {
-    uint8_t protocol;
+    uint8_t protocol, sourceIp[4], destIp[4];
     uint16_t identification, headerLength;
     if (request == 0 || requestSize < IP_HEADER_SIZE ||
         (request[0] >> 4) != 4U || (request[0] & 15U) < 5U) return 0;
@@ -90,7 +93,9 @@ uint16_t IP_CreateReply(const uint8_t *request, uint16_t requestSize,
     if (requestSize < headerLength) return 0;
     protocol = request[9];
     identification = ((uint16_t)request[4] << 8) | request[5];
-    return IP_CreatePacket(request + 16, request + 12, protocol,
+    memcpy(sourceIp, request + 16, 4);
+    memcpy(destIp, request + 12, 4);
+    return IP_CreatePacket(sourceIp, destIp, protocol,
                            payload, payloadSize, (uint16_t)(identification + 1U),
                            reply, capacity);
 }
@@ -106,16 +111,11 @@ uint16_t IP_ProcessPacket(const uint8_t *request, uint16_t requestSize,
         !IP_ParsePacket(request, requestSize, localIp, &info)) return 0;
     // Не отправляем автоматические ответы на broadcast.
     if (memcmp(info.destinationIp, broadcast, 4) == 0) return 0;
-    dataLength = 0;
-    if (info.protocol == IP_PROTOCOL_ICMP)
-        dataLength = ICMP_ProcessPacket(info.data, info.dataLength,
-                                      reply + IP_HEADER_SIZE,
-                                      (uint16_t)(capacity - IP_HEADER_SIZE));
-    else if (info.protocol == IP_PROTOCOL_UDP)
-        dataLength = UDP_CreateReply(info.data, info.dataLength,
-                                     info.sourceIp, info.destinationIp,
-                                     reply + IP_HEADER_SIZE,
-                                     (uint16_t)(capacity - IP_HEADER_SIZE));
+    // Ответ на UDP выбирает приложение; сетевой стек автоматически отвечает только на ping.
+    if (info.protocol != IP_PROTOCOL_ICMP) return 0;
+    dataLength = ICMP_ProcessPacket(info.data, info.dataLength,
+                                  reply + IP_HEADER_SIZE,
+                                  (uint16_t)(capacity - IP_HEADER_SIZE));
     if (dataLength == 0) return 0;
     return IP_CreatePacket(localIp, info.sourceIp, info.protocol,
                            reply + IP_HEADER_SIZE, dataLength,
